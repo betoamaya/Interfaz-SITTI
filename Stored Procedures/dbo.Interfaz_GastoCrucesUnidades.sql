@@ -4,7 +4,7 @@ SET ANSI_NULLS ON
 GO
 -- =============================================
 -- Responsable:		Roberto Amaya
--- Ultimo Cambio:	04/06/2018
+-- Ultimo Cambio:	25/06/2018
 -- Descripción:		Complementa Gastos de Casetas
 -- =============================================
 CREATE PROCEDURE [dbo].[Interfaz_GastoCrucesUnidades]
@@ -614,4 +614,5 @@ AS
         SELECT  @NumErr = 0 ,
                 @Descripcion = 'Proceso Concluido.'; 
     END
+
 GO

@@ -4,7 +4,7 @@ SET ANSI_NULLS ON
 GO
 -- =============================================
 -- Responsable:		Roberto Amaya
--- Ultimo Cambio:	11/04/2018
+-- Ultimo Cambio:	25/04/2018
 -- Descripción:		Afecta los movimientos de Gasto.
 -- =============================================
 CREATE PROCEDURE [dbo].[Interfaz_GastoAfectar]
@@ -31,12 +31,12 @@ AS
     DECLARE @MensajeError AS VARCHAR(MAX) ,
         @Error AS INT ,
         @Mensaje AS VARCHAR(512) ,
-        @Estatus VARCHAR(20);
+        @PathComprueba VARCHAR(255);
 
 	-- ******************************************************
 	--		VALIDACIONES
 	-- ******************************************************
-    PRINT 'Validaciones Generales';
+
     IF @Usuario <> 'SITTI'
         BEGIN
             SET @MensajeError = 'Usuario no valido. Por favor, indique un Usuario valido para la ejecución de este proceso.';
@@ -60,7 +60,7 @@ AS
             RETURN;
         END
 
-    IF NOT EXISTS ( SELECT  g.ID
+    IF NOT EXISTS ( SELECT  *
                     FROM    dbo.Gasto g
                     WHERE   g.ID = @Id )
         BEGIN
@@ -74,7 +74,7 @@ AS
             RETURN;
         END
 
-    IF EXISTS ( SELECT  g.Estatus
+    IF EXISTS ( SELECT  *
                 FROM    dbo.Gasto g
                 WHERE   g.ID = @Id
                         AND g.Estatus = 'CANCELADO' )
@@ -97,28 +97,25 @@ AS
        ) IN ( 'SINAFECTAR' ) /*Se Agrego esta validación, para que no se concluyeran los movimientos.*/
         BEGIN
             BEGIN TRY
-                PRINT 'Afectando el Gasto ' + RTRIM(@Id);
                 EXEC dbo.spAfectar @Modulo = 'GAS', @ID = @Id, @Accion = 'AFECTAR', @Base = 'Todo', @GenerarMov = NULL,
                     @Usuario = @Usuario, @SincroFinal = NULL, @EnSilencio = 1, @Ok = @Error OUTPUT,
                     @OkRef = @Mensaje OUTPUT;
 
                 IF @Error IN ( 20900, 20901 )
                     BEGIN
-                        SELECT  @Estatus = g.Estatus
-                        FROM    dbo.Gasto AS g
-                        WHERE   g.ID = @Id;
-
-                        PRINT 'El Gasto ' + RTRIM(@Id) + ' tiene estatus ' + RTRIM(@Estatus);
-
-                        PRINT 'El Gasto ' + RTRIM(@Id) + ' Requiere Autorización / '
-                            + RTRIM(CAST(ISNULL(@Error, -1) AS VARCHAR(255))) + ', ' + RTRIM(ISNULL(@Mensaje, ''));;
                         IF ( SELECT g.Estatus FROM dbo.Gasto AS g WHERE g.ID = @Id
                            ) = 'SINAFECTAR'
                             BEGIN
-                                PRINT 'Autorizando Gasto ' + RTRIM(@Id) + ' con usuario EYCRUZ'
-                                EXEC dbo.spAfectar @Modulo = 'GAS', @ID = @Id, @Accion = 'AUTORIZAR', @Base = 'Todo',
-                                    @GenerarMov = NULL, @Usuario = 'EYCRUZ', @SincroFinal = NULL, @EnSilencio = 1,
-                                    @Ok = @Error OUTPUT, @OkRef = @Mensaje OUTPUT;
+                                EXEC dbo.spAfectar @Modulo = 'GAS', -- char(5)
+                                    @ID = @Id, -- int
+                                    @Accion = 'AUTORIZAR', -- char(20)
+                                    @Base = 'Todo', -- char(20)
+                                    @GenerarMov = NULL, -- char(20)
+                                    @Usuario = 'EYCRUZ', -- char(10)
+                                    @SincroFinal = NULL, -- bit
+                                    @EnSilencio = 1, -- bit
+                                    @Ok = @Error OUTPUT, -- int
+                                    @OkRef = @Mensaje OUTPUT;
                             END
                     END
             END TRY
@@ -127,108 +124,41 @@ AS
                 SELECT  @Error = ERROR_NUMBER() ,
                         @Mensaje = RTRIM(CONVERT(VARCHAR(20), @Id)) + '/' + '(SP ' + ISNULL(ERROR_MESSAGE(), '')
                         + ', ln ' + ISNULL(CAST(ERROR_LINE() AS VARCHAR), '') + ') ' + ISNULL(ERROR_MESSAGE(), '');
-
-                PRINT 'CATCH: ERROR_NUMBER ' + RTRIM(@Error) + ' ERROR_LINE ' + RTRIM(@Mensaje);
             END CATCH
         END
-    SELECT  @Estatus = g.Estatus
-    FROM    dbo.Gasto AS g
-    WHERE   g.ID = @Id;
+	
 
-    PRINT 'El Gasto ' + RTRIM(@Id) + ' tiene estatus ' + RTRIM(@Estatus);
-    IF ( SELECT RTRIM(g.Estatus)
-         FROM   dbo.Gasto g
-         WHERE  g.ID = @Id
+    IF ( SELECT g.Estatus FROM dbo.Gasto g WHERE g.ID = @Id
        ) = 'SINAFECTAR'
         BEGIN
             SET @MensajeError = 'Ocurrio un error al aplicar el movimiento ' + RTRIM(CONVERT(VARCHAR, @Id))
                 + ' / Error = ' + RTRIM(CAST(ISNULL(@Error, -1) AS VARCHAR(255))) + ', Mensaje = '
                 + RTRIM(ISNULL(@Mensaje, ''));
-            SELECT  @NumErr = 0 ,
-                    @Descripcion = @MensajeError;
+            SELECT  @NumErr = 2 ,
+                    @Descripcion = @MensajeError; -- Verificar con RAUL
             EXEC dbo.Interfaz_LogsInsertar 'Interfaz_GastoAfectar', 'Error', @MensajeError, @Usuario, @LogParametrosXML;
             RAISERROR(@MensajeError, 16, 1);
             RETURN;
         END
-    IF ( SELECT RTRIM(ISNULL(g.Situacion, ''))
+
+    IF ( SELECT g.Estatus
          FROM   dbo.Gasto g
          WHERE  g.ID = @Id
-       ) <> 'Autorizado'
+                AND g.Mov = 'Comprobante'
+       ) = 'BORRADOR'
         BEGIN
-            PRINT 'El Gasto ' + RTRIM(@Id) + ' tiene situación diferente a Autorizado';
-            IF ( SELECT RTRIM(g.Estatus)
-                 FROM   dbo.Gasto g
-                 WHERE  g.ID = @Id
-                        AND g.Mov = 'Comprobante'
-               ) = 'BORRADOR'
-                BEGIN
-                    BEGIN TRY
-                        PRINT 'Cambiando situación de Gasto ' + RTRIM(@Id) + ' a Autorizado';	
-                        EXEC dbo.spCambiarSituacion @Modulo = 'GAS', @ID = @Id, @Situacion = 'Autorizado',
-                            @SituacionFecha = NULL, @Usuario = 'EYCRUZ', @SituacionUsuario = 'EYCRUZ',
-                            @SituacionNota = NULL;
-                    END TRY
-                    BEGIN CATCH
-                        SELECT  @Error = ERROR_NUMBER() ,
-                                @Mensaje = RTRIM(CONVERT(VARCHAR(20), @Id)) + '/' + '(SP ' + ISNULL(ERROR_MESSAGE(), '')
-                                + ', ln ' + ISNULL(CAST(ERROR_LINE() AS VARCHAR), '') + ') ' + ISNULL(ERROR_MESSAGE(),
-                                                                                                      '');
-                        PRINT 'CATCH: ERROR_NUMBER ' + RTRIM(@Error) + ' ERROR_LINE ' + RTRIM(@Mensaje);
-                    END CATCH
-                    IF ( SELECT RTRIM(g.Situacion)
-                         FROM   dbo.Gasto g
-                         WHERE  g.ID = @Id
-                       ) <> 'Autorizado'
-                        BEGIN
-                            SET @MensajeError = 'Ocurrio un error al cambiar la situación del movimiento '
-                                + RTRIM(CONVERT(VARCHAR, @Id)) + ' / Error = '
-                                + RTRIM(CAST(ISNULL(@Error, -1) AS VARCHAR(255))) + ', Mensaje = '
-                                + RTRIM(ISNULL(@Mensaje, ''));
-                            SELECT  @NumErr = 0 ,
-                                    @Descripcion = @MensajeError;
-                            EXEC dbo.Interfaz_LogsInsertar 'Interfaz_GastoAfectar', 'Error', @MensajeError, @Usuario,
-                                @LogParametrosXML;
-                            RAISERROR(@MensajeError, 16, 1);
-                            RETURN;
-                        END
-                END
+            EXEC dbo.spCambiarSituacion @Modulo = 'GAS', @ID = @Id, @Situacion = 'Autorizado', @SituacionFecha = NULL,
+                @Usuario = 'EYCRUZ', @SituacionUsuario = NULL, @SituacionNota = NULL
+        END
 
-            IF ( SELECT g.Estatus
-                 FROM   dbo.Gasto g
-                 WHERE  g.ID = @Id
-                        AND g.Mov <> 'Comprobante'
-               ) = 'PENDIENTE'
-                BEGIN
-                    BEGIN TRY
-                        PRINT 'Cambiando situación de Gasto ' + RTRIM(@Id) + ' a Autorizado';	
-                        EXEC dbo.spCambiarSituacion @Modulo = 'GAS', @ID = @Id, @Situacion = 'Autorizado',
-                            @SituacionFecha = NULL, @Usuario = 'EYCRUZ', @SituacionUsuario = 'EYCRUZ',
-                            @SituacionNota = NULL;
-                    END TRY
-                    BEGIN CATCH
-                        SELECT  @Error = ERROR_NUMBER() ,
-                                @Mensaje = RTRIM(CONVERT(VARCHAR(20), @Id)) + '/' + '(SP ' + ISNULL(ERROR_MESSAGE(), '')
-                                + ', ln ' + ISNULL(CAST(ERROR_LINE() AS VARCHAR), '') + ') ' + ISNULL(ERROR_MESSAGE(),
-                                                                                                      '');
-                        PRINT 'CATCH: ERROR_NUMBER ' + RTRIM(@Error) + ' ERROR_LINE ' + RTRIM(@Mensaje);
-                    END CATCH
-                    IF ( SELECT RTRIM(g.Situacion)
-                         FROM   dbo.Gasto g
-                         WHERE  g.ID = @Id
-                       ) <> 'Autorizado'
-                        BEGIN
-                            SET @MensajeError = 'Ocurrio un error al cambiar la situación del movimiento '
-                                + RTRIM(CONVERT(VARCHAR, @Id)) + ' / Error = '
-                                + RTRIM(CAST(ISNULL(@Error, -1) AS VARCHAR(255))) + ', Mensaje = '
-                                + RTRIM(ISNULL(@Mensaje, ''));
-                            SELECT  @NumErr = 0 ,
-                                    @Descripcion = @MensajeError;
-                            EXEC dbo.Interfaz_LogsInsertar 'Interfaz_GastoAfectar', 'Error', @MensajeError, @Usuario,
-                                @LogParametrosXML;
-                            RAISERROR(@MensajeError, 16, 1);
-                            RETURN;
-                        END
-                END
+    IF ( SELECT g.Estatus
+         FROM   dbo.Gasto g
+         WHERE  g.ID = @Id
+                AND g.Mov <> 'Comprobante'
+       ) = 'PENDIENTE'
+        BEGIN
+            EXEC dbo.spCambiarSituacion @Modulo = 'GAS', @ID = @Id, @Situacion = 'Autorizado', @SituacionFecha = NULL,
+                @Usuario = 'EYCRUZ', @SituacionUsuario = NULL, @SituacionNota = NULL
         END
 	
 	-- ******************************************************
@@ -240,6 +170,4 @@ AS
 
     SELECT  @NumErr AS 'NumErr' ,
             @Descripcion AS 'Descripcion';
-GO
-GRANT EXECUTE ON  [dbo].[Interfaz_GastoAfectar] TO [Linked_Svam_Pruebas]
 GO
